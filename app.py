@@ -1,28 +1,20 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from firebase_admin import credentials, messaging, initialize_app, firestore
+from firebase_admin import credentials, messaging, initialize_app
 import os
 from dotenv import load_dotenv
 import json
-import threading
-import time
-from datetime import datetime, timedelta
 
-
+# 加載環境變數
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-
-firebase_app = None
-db = None
-
-
+# 初始化 Firebase Admin
 def init_firebase():
-    global firebase_app, db
     try:
-        
+        # 從環境變數讀取 service account
         service_account_json = os.getenv('FIREBASE_SERVICE_ACCOUNT')
         
         if not service_account_json:
@@ -37,8 +29,6 @@ def init_firebase():
         
         # 初始化 Firebase
         firebase_app = initialize_app(cred)
-        db = firestore.client()
-        
         print("✅ Firebase Admin initialized successfully")
         return firebase_app
         
@@ -51,99 +41,13 @@ def init_firebase():
 
 firebase_app = init_firebase()
 
-
-def cleanup_stale_presence():
-
-    while True:
-        try:
-            if db:
-              
-                cutoff_time = datetime.utcnow() - timedelta(seconds=30)
-                
-         
-                users_ref = db.collection('user_presence')
-                docs = users_ref.get()
-                
-                cleaned_count = 0
-                for doc in docs:
-                    data = doc.to_dict()
-                    last_active = data.get('last_active')
-                    
-                 
-                    if last_active and last_active.timestamp() < cutoff_time.timestamp():
-                      
-                        users_ref.document(doc.id).set({
-                            'current_private_chat': firestore.DELETE_FIELD,
-                            'current_group_chat': firestore.DELETE_FIELD,
-                            'last_active': firestore.SERVER_TIMESTAMP,
-                            'updated_at': firestore.SERVER_TIMESTAMP,
-                        }, merge=True)
-                        cleaned_count += 1
-                        print(f"🧹 Cleaned stale presence for user: {doc.id}")
-                
-                if cleaned_count > 0:
-                    print(f"🧹 Cleaned {cleaned_count} stale user presence records")
-                
-            time.sleep(15) 
-            
-        except Exception as e:
-            print(f"❌ Error in cleanup_stale_presence: {e}")
-            time.sleep(60)  
-
-
-def start_cleanup_thread():
-    cleanup_thread = threading.Thread(target=cleanup_stale_presence, daemon=True)
-    cleanup_thread.start()
-    print("✅ Cleanup thread started (runs every 15 seconds)")
-
-
-@app.route('/cleanup-stale', methods=['POST'])
-def cleanup_stale_endpoint():
-    try:
-        if not db:
-            return jsonify({"success": False, "error": "Firestore not initialized"}), 500
-        
-        
-        cutoff_time = datetime.utcnow() - timedelta(seconds=30)
-        
-    
-        users_ref = db.collection('user_presence')
-        docs = users_ref.get()
-        
-        cleaned_users = []
-        for doc in docs:
-            data = doc.to_dict()
-            last_active = data.get('last_active')
-            
-      
-            if last_active and last_active.timestamp() < cutoff_time.timestamp():
-                
-                users_ref.document(doc.id).set({
-                    'current_private_chat': firestore.DELETE_FIELD,
-                    'current_group_chat': firestore.DELETE_FIELD,
-                    'last_active': firestore.SERVER_TIMESTAMP,
-                    'updated_at': firestore.SERVER_TIMESTAMP,
-                }, merge=True)
-                cleaned_users.append(doc.id)
-        
-        return jsonify({
-            "success": True,
-            "cleaned_count": len(cleaned_users),
-            "cleaned_users": cleaned_users
-        })
-        
-    except Exception as e:
-        print(f"Error in cleanup endpoint: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
 @app.route('/')
 def home():
     return jsonify({
         "status": "online",
         "message": "FCM Notification Server is running",
         "firebase_initialized": firebase_app is not None,
-        "cleanup_active": True,
-        "version": "1.0.1"
+        "version": "1.0.0"
     })
 
 @app.route('/health')
@@ -166,7 +70,7 @@ def debug():
 @app.route('/send-notification', methods=['POST'])
 def send_notification():
     try:
- 
+        # 檢查 Firebase 是否初始化
         if not firebase_app:
             return jsonify({
                 "success": False,
@@ -192,11 +96,11 @@ def send_notification():
         print(f"📨 Sending notification to {len(tokens)} tokens")
         print(f"📝 Title: {title}, Body: {body}")
 
-     
+        # 使用 Firebase Admin 發送通知
         results = []
         for token in tokens:
             try:
-               
+                # 創建 FCM v1 格式的消息
                 message = messaging.Message(
                     notification=messaging.Notification(
                         title=title,
@@ -216,7 +120,7 @@ def send_notification():
                     )
                 )
                 
-          
+                # 發送消息（使用 FCM HTTP v1 API）
                 response = messaging.send(message)
                 
                 results.append({
@@ -262,8 +166,4 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 Starting server on port {port}")
     print(f"🔧 Firebase initialized: {firebase_app is not None}")
-    
-
-    start_cleanup_thread()
-    
     app.run(host='0.0.0.0', port=port, debug=False)
