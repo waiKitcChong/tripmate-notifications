@@ -5,16 +5,143 @@ import os
 from dotenv import load_dotenv
 import json
 
-# 加載環境變數
+
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# 初始化 Firebase Admin
+
+@app.route('/send-call-notification', methods=['POST'])
+def send_call_notification():
+    try:
+        if not firebase_app:
+            return jsonify({
+                "success": False,
+                "error": "Firebase not initialized"
+            }), 500
+            
+        data = request.get_json()
+        
+        required_fields = ['target_token', 'caller_id', 'caller_name', 'call_type', 'channel_name']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+        
+        target_token = data['target_token']
+        caller_id = data['caller_id']
+        caller_name = data['caller_name']
+        call_type = data['call_type']  # 'video' or 'voice'
+        channel_name = data['channel_name']
+        call_id = data.get('call_id', channel_name)
+        
+        print(f"📞 Sending call notification from {caller_name} ({caller_id})")
+        
+        # Prepare notification data
+        notification_data = {
+            'type': 'incoming_call',
+            'caller_id': caller_id,
+            'caller_name': caller_name,
+            'call_type': call_type,
+            'channel_name': channel_name,
+            'call_id': call_id,
+            'timestamp': str(datetime.utcnow())
+        }
+        
+        message = messaging.Message(
+            data=notification_data,
+            token=target_token,
+            android=messaging.AndroidConfig(
+                priority='high',
+                notification=messaging.AndroidNotification(
+                    title=f"Incoming {call_type} call",
+                    body=f"{caller_name} is calling you",
+                    icon='@mipmap/ic_launcher',
+                    color='#FF4081',
+                    sound='default',
+                    channel_id='calls_channel',
+                    importance='high'
+                ),
+                direct_boot_ok=True
+            ),
+            apns=messaging.APNSConfig(
+                payload=messaging.APNSPayload(
+                    aps=messaging.Aps(
+                        alert=messaging.ApsAlert(
+                            title=f"Incoming {call_type} call",
+                            body=f"{caller_name} is calling you"
+                        ),
+                        sound='default',
+                        category='INCOMING_CALL',
+                        content_available=True,
+                        mutable_content=True
+                    )
+                )
+            ),
+            notification=messaging.Notification(
+                title=f"Incoming {call_type} call",
+                body=f"{caller_name} is calling you"
+            )
+        )
+        
+        response = messaging.send(message)
+        
+        return jsonify({
+            "success": True,
+            "message_id": response,
+            "data": notification_data
+        })
+        
+    except Exception as e:
+        print(f"💥 Error in send-call-notification: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/cancel-call-notification', methods=['POST'])
+def cancel_call_notification():
+    try:
+        data = request.get_json()
+        
+        if not data or 'target_token' not in data:
+            return jsonify({"error": "target_token is required"}), 400
+        
+        target_token = data['target_token']
+        call_id = data.get('call_id', '')
+        
+        print(f"📞 Cancelling call notification for token: {target_token[:10]}...")
+        
+        message = messaging.Message(
+            data={
+                'type': 'call_cancelled',
+                'call_id': call_id,
+                'timestamp': str(datetime.utcnow())
+            },
+            token=target_token,
+            android=messaging.AndroidConfig(
+                priority='high'
+            )
+        )
+        
+        response = messaging.send(message)
+        
+        return jsonify({
+            "success": True,
+            "message": "Call cancelled notification sent"
+        })
+        
+    except Exception as e:
+        print(f"💥 Error in cancel-call-notification: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 def init_firebase():
     try:
-        # 從環境變數讀取 service account
+        
         service_account_json = os.getenv('FIREBASE_SERVICE_ACCOUNT')
         
         if not service_account_json:
@@ -27,7 +154,7 @@ def init_firebase():
         
         cred = credentials.Certificate(service_account_dict)
         
-        # 初始化 Firebase
+     
         firebase_app = initialize_app(cred)
         print("✅ Firebase Admin initialized successfully")
         return firebase_app
@@ -70,7 +197,6 @@ def debug():
 @app.route('/send-notification', methods=['POST'])
 def send_notification():
     try:
-        # 檢查 Firebase 是否初始化
         if not firebase_app:
             return jsonify({
                 "success": False,
@@ -96,11 +222,10 @@ def send_notification():
         print(f"📨 Sending notification to {len(tokens)} tokens")
         print(f"📝 Title: {title}, Body: {body}")
 
-        # 使用 Firebase Admin 發送通知
+
         results = []
         for token in tokens:
             try:
-                # 創建 FCM v1 格式的消息
                 message = messaging.Message(
                     notification=messaging.Notification(
                         title=title,
@@ -120,7 +245,6 @@ def send_notification():
                     )
                 )
                 
-                # 發送消息（使用 FCM HTTP v1 API）
                 response = messaging.send(message)
                 
                 results.append({
